@@ -31,7 +31,7 @@ import { Label } from '@/components/ui/label'
 
 const sessionStorageKey = 'partchaos.session'
 const rowHeight = 56
-const tableHeight = 520
+const defaultTableHeight = 520
 
 type InventoryItem = {
   _id: Id<'items'>
@@ -314,8 +314,8 @@ function App() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-4 py-8">
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <main className="mx-auto flex h-screen w-full max-w-6xl flex-col gap-6 overflow-hidden px-4 pt-8 pb-4">
+      <header className="shrink-0 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-2">
           <p className="text-muted-foreground text-sm">partchaos</p>
           <h1 className="text-4xl font-semibold tracking-tight">Inventory</h1>
@@ -339,15 +339,15 @@ function App() {
       </header>
 
       {message ? (
-        <Card>
+        <Card className="shrink-0">
           <CardContent className="text-sm">{message}</CardContent>
         </Card>
       ) : null}
 
-      <Card>
+      <Card className="min-h-0 w-full min-w-0 flex-1 basis-0 pb-0">
         <CardHeader>
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-1.5">
+          <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 space-y-1.5">
               <CardTitle>Products</CardTitle>
               <CardDescription>
                 {items === undefined
@@ -366,9 +366,9 @@ function App() {
             </div>
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex min-h-0 flex-1 basis-0 flex-col pb-6">
           {items === undefined ? (
-            <p className="text-muted-foreground rounded-md border p-6 text-center text-sm">
+            <p className="text-muted-foreground flex flex-1 items-center justify-center rounded-md border p-6 text-center text-sm">
               Loading products...
             </p>
           ) : (
@@ -485,23 +485,46 @@ function InventoryTable({
   onRemove: (id: Id<'items'>) => void
 }) {
   const [scrollTop, setScrollTop] = useState(0)
+  const [tableViewportHeight, setTableViewportHeight] = useState(defaultTableHeight)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
   const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - 4)
-  const visibleCount = Math.ceil(tableHeight / rowHeight) + 8
+  const visibleCount = Math.ceil(tableViewportHeight / rowHeight) + 8
   const visibleItems = items.slice(startIndex, startIndex + visibleCount)
 
+  useEffect(() => {
+    const scrollContainer = scrollContainerRef.current
+
+    if (!scrollContainer) {
+      return
+    }
+
+    const updateTableHeight = () => {
+      setTableViewportHeight(Math.max(scrollContainer.clientHeight, rowHeight))
+    }
+
+    updateTableHeight()
+
+    const observer = new ResizeObserver(updateTableHeight)
+    observer.observe(scrollContainer)
+
+    return () => observer.disconnect()
+  }, [])
+
   return (
-    <div className="overflow-hidden rounded-md border">
-      <div className="bg-muted/50 grid grid-cols-[1.5fr_1fr_3rem] border-b px-4 py-3 text-sm font-medium">
+    <div className="flex min-h-0 w-full min-w-0 flex-1 basis-0 flex-col overflow-hidden rounded-md border">
+      <div className="bg-muted/50 grid grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_3rem] border-b px-4 py-3 text-sm font-medium">
         <div>SKU</div>
         <div>Location</div>
         <div className="sr-only">Remove</div>
       </div>
       {items.length === 0 ? (
-        <p className="text-muted-foreground p-8 text-center text-sm">No products found.</p>
+        <p className="text-muted-foreground flex flex-1 items-center justify-center p-8 text-center text-sm">
+          No products found.
+        </p>
       ) : (
         <div
-          className="overflow-auto"
-          style={{ height: tableHeight }}
+          ref={scrollContainerRef}
+          className="min-h-0 flex-1 overflow-auto"
           onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         >
           <div style={{ height: items.length * rowHeight, position: 'relative' }}>
@@ -509,11 +532,11 @@ function InventoryTable({
               {visibleItems.map((item) => (
                 <div
                   key={item._id}
-                  className="grid grid-cols-[1.5fr_1fr_3rem] items-center border-b px-4 text-sm last:border-b-0"
+                  className="grid grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_3rem] items-center border-b px-4 text-sm last:border-b-0"
                   style={{ height: rowHeight }}
                 >
-                  <div className="truncate font-medium">{item.sku}</div>
-                  <div className="text-muted-foreground truncate">{item.location || '-'}</div>
+                  <div className="min-w-0 truncate font-medium">{item.sku}</div>
+                  <div className="text-muted-foreground min-w-0 truncate">{item.location || '-'}</div>
                   <Button
                     type="button"
                     variant="ghost"
