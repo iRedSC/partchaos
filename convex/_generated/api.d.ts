@@ -12,6 +12,7 @@ import type * as auth from "../auth.js";
 import type * as authData from "../authData.js";
 import type * as items from "../items.js";
 import type * as passkeys from "../passkeys.js";
+import type * as pdfScan from "../pdfScan.js";
 
 import type {
   ApiFromModules,
@@ -24,6 +25,7 @@ declare const fullApi: ApiFromModules<{
   authData: typeof authData;
   items: typeof items;
   passkeys: typeof passkeys;
+  pdfScan: typeof pdfScan;
 }>;
 
 /**

@@ -119,3 +119,19 @@ export const createSession = internalMutation({
     })
   },
 })
+
+export const getValidSession = internalQuery({
+  args: { token: v.string() },
+  handler: async (ctx, args) => {
+    const session = await ctx.db
+      .query('sessions')
+      .withIndex('by_token', (q) => q.eq('token', args.token))
+      .unique()
+
+    if (!session || session.expiresAt <= Date.now()) {
+      return null
+    }
+
+    return session
+  },
+})

@@ -25,7 +25,12 @@ export default defineSchema({
   }).index('by_token', ['token']),
 
   items: defineTable({
-    text: v.string(),
+    sku: v.string(),
+    brand: v.string(),
+    location: v.string(),
     createdAt: v.number(),
-  }).index('by_created_at', ['createdAt']),
+    updatedAt: v.number(),
+  })
+    .index('by_created_at', ['createdAt'])
+    .index('by_sku', ['sku']),
 })

@@ -19,24 +19,58 @@ export const list = query({
   handler: async (ctx, args) => {
     await requireSession(ctx, args.sessionToken)
 
-    return await ctx.db.query('items').withIndex('by_created_at').order('desc').take(25)
+    return await ctx.db.query('items').withIndex('by_created_at').order('desc').take(1000)
   },
 })
 
-export const add = mutation({
-  args: { sessionToken: v.string(), text: v.string() },
+export const upsertMany = mutation({
+  args: {
+    sessionToken: v.string(),
+    products: v.array(
+      v.object({
+        sku: v.string(),
+        brand: v.string(),
+        location: v.string(),
+      }),
+    ),
+  },
   handler: async (ctx, args) => {
     await requireSession(ctx, args.sessionToken)
 
-    const text = args.text.trim()
-    if (!text) {
-      throw new Error('Add a little text first.')
+    const now = Date.now()
+    const products = args.products
+      .map((product) => ({
+        sku: product.sku.trim(),
+        brand: product.brand.trim(),
+        location: product.location.trim(),
+      }))
+      .filter((product) => product.sku)
+
+    if (products.length === 0) {
+      throw new Error('Add at least one SKU first.')
     }
 
-    await ctx.db.insert('items', {
-      text,
-      createdAt: Date.now(),
-    })
+    for (const product of products) {
+      const existing = await ctx.db
+        .query('items')
+        .withIndex('by_sku', (q) => q.eq('sku', product.sku))
+        .unique()
+
+      if (existing) {
+        await ctx.db.patch(existing._id, {
+          brand: product.brand,
+          location: product.location,
+          updatedAt: now,
+        })
+        continue
+      }
+
+      await ctx.db.insert('items', {
+        ...product,
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
   },
 })
 
