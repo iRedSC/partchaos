@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
 import { useAction, useMutation, useQuery } from 'convex/react'
@@ -48,7 +48,15 @@ type ProductDraft = {
 }
 
 type ProductField = 'sku' | 'brand' | 'location'
-type AddProductsStep = 'upload' | 'processing' | 'edit'
+type AddProductsStep = 'upload' | 'processing' | 'select' | 'edit'
+type FillSelection = {
+  sourceId: string
+  targetId: string
+  field: ProductField
+  value: string
+}
+
+const productFields: ProductField[] = ['sku', 'brand', 'location']
 
 function messageFromError(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong.'
@@ -544,13 +552,70 @@ function AddProductsDialog({
   const [scanError, setScanError] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<ProductDraft[]>([createEmptyDraft()])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [bulkValue, setBulkValue] = useState('')
+  const [fillSelection, setFillSelection] = useState<FillSelection | null>(null)
+  const activeScanId = useRef(0)
   const existingBySku = useMemo(
     () => new Map(existingItems.map((item) => [item.sku.toLowerCase(), item])),
     [existingItems],
   )
   const allSelected = drafts.length > 0 && selectedIds.size === drafts.length
-  const saveableDrafts = drafts.filter((draft) => draft.sku.trim())
+  const selectedDrafts = drafts.filter((draft) => selectedIds.has(draft.id))
+  const saveableDrafts = selectedDrafts.filter((draft) => draft.sku.trim())
+  const fillRange = useMemo(() => {
+    if (!fillSelection) {
+      return null
+    }
+
+    const sourceIndex = drafts.findIndex((draft) => draft.id === fillSelection.sourceId)
+    const targetIndex = drafts.findIndex((draft) => draft.id === fillSelection.targetId)
+
+    if (sourceIndex === -1 || targetIndex === -1) {
+      return null
+    }
+
+    return {
+      start: Math.min(sourceIndex, targetIndex),
+      end: Math.max(sourceIndex, targetIndex),
+      field: fillSelection.field,
+    }
+  }, [drafts, fillSelection])
+
+  useEffect(() => {
+    if (!fillSelection) {
+      return
+    }
+
+    const selection = fillSelection
+
+    function finishFillSelection() {
+      setDrafts((currentDrafts) => {
+        const sourceIndex = currentDrafts.findIndex((currentDraft) => currentDraft.id === selection.sourceId)
+        const targetIndex = currentDrafts.findIndex((currentDraft) => currentDraft.id === selection.targetId)
+
+        if (sourceIndex === -1 || targetIndex === -1) {
+          return currentDrafts
+        }
+
+        const start = Math.min(sourceIndex, targetIndex)
+        const end = Math.max(sourceIndex, targetIndex)
+
+        return currentDrafts.map((draft, index) => {
+          if (index < start || index > end) {
+            return draft
+          }
+
+          const updatedDraft = { ...draft, [selection.field]: selection.value }
+          return selection.field === 'sku'
+            ? hydrateSkuFromExisting(updatedDraft, existingBySku)
+            : updatedDraft
+        })
+      })
+      setFillSelection(null)
+    }
+
+    window.addEventListener('pointerup', finishFillSelection)
+    return () => window.removeEventListener('pointerup', finishFillSelection)
+  }, [existingBySku, fillSelection])
 
   function resetDraftState() {
     setStep('upload')
@@ -560,7 +625,8 @@ function AddProductsDialog({
     setScanError(null)
     setDrafts([createEmptyDraft()])
     setSelectedIds(new Set())
-    setBulkValue('')
+    setFillSelection(null)
+    activeScanId.current += 1
   }
 
   function resetDialog(nextOpen: boolean) {
@@ -578,45 +644,55 @@ function AddProductsDialog({
   function handlePdfFileChange(file: File | null) {
     setPdfFile(file)
     setScanError(null)
-
-    if (file) {
-      setStep('processing')
-    }
-  }
-
-  function startManualEntry() {
-    setDrafts([createEmptyDraft()])
+    setDrafts([])
     setSelectedIds(new Set())
-    setStep('edit')
-  }
 
-  async function handleScanPdf() {
-    if (!pdfFile) {
-      startManualEntry()
+    if (!file) {
+      setStep('upload')
       return
     }
 
+    setStep('processing')
+    startPdfScan(file)
+  }
+
+  function startManualEntry() {
+    const draft = createEmptyDraft()
+
+    setPdfFile(null)
+    setScanError(null)
+    setDrafts([draft])
+    setSelectedIds(new Set([draft.id]))
+    setStep('edit')
+  }
+
+  async function startPdfScan(file: File) {
+    const scanId = activeScanId.current + 1
+
+    activeScanId.current = scanId
     setScanning(true)
     setScanError(null)
 
     try {
-      const parsedDrafts = await onScan(pdfFile, purchaseOrderBrand)
-      const hydratedDrafts = parsedDrafts.map((draft) => {
-        const hydrated = hydrateSkuFromExisting(draft, existingBySku)
+      const parsedDrafts = await onScan(file, '')
 
-        return {
-          ...hydrated,
-          brand: purchaseOrderBrand.trim(),
-        }
-      })
+      if (activeScanId.current !== scanId) {
+        return
+      }
+
+      const hydratedDrafts = parsedDrafts.map((draft) => hydrateSkuFromExisting(draft, existingBySku))
 
       setDrafts(hydratedDrafts.length > 0 ? hydratedDrafts : [createEmptyDraft()])
-      setSelectedIds(new Set())
-      setStep('edit')
+      setSelectedIds(new Set(hydratedDrafts.map((draft) => draft.id)))
+      setStep('select')
     } catch (error) {
-      setScanError(messageFromError(error))
+      if (activeScanId.current === scanId) {
+        setScanError(messageFromError(error))
+      }
     } finally {
-      setScanning(false)
+      if (activeScanId.current === scanId) {
+        setScanning(false)
+      }
     }
   }
 
@@ -633,21 +709,31 @@ function AddProductsDialog({
     )
   }
 
-  function applyBulkValue(field: ProductField) {
-    if (!bulkValue || selectedIds.size === 0) {
-      return
-    }
+  function applyPurchaseOrderBrand(draft: ProductDraft) {
+    const brand = purchaseOrderBrand.trim()
 
-    setDrafts((currentDrafts) =>
-      currentDrafts.map((draft) => {
-        if (!selectedIds.has(draft.id)) {
-          return draft
-        }
+    return brand ? { ...draft, brand } : draft
+  }
 
-        const updatedDraft = { ...draft, [field]: bulkValue }
-        return field === 'sku' ? hydrateSkuFromExisting(updatedDraft, existingBySku) : updatedDraft
-      }),
-    )
+  function continueToEditSelectedProducts() {
+    const keptDrafts = drafts.filter((draft) => selectedIds.has(draft.id)).map(applyPurchaseOrderBrand)
+
+    setDrafts(keptDrafts)
+    setSelectedIds(new Set(keptDrafts.map((draft) => draft.id)))
+    setStep('edit')
+  }
+
+  function beginFillSelection(id: string, field: ProductField, value: string) {
+    setFillSelection({
+      sourceId: id,
+      targetId: id,
+      field,
+      value,
+    })
+  }
+
+  function updateFillSelectionTarget(id: string) {
+    setFillSelection((current) => (current ? { ...current, targetId: id } : current))
   }
 
   function toggleAll(checked: boolean) {
@@ -668,6 +754,21 @@ function AddProductsDialog({
     })
   }
 
+  function toggleDraftSelection(id: string) {
+    toggleDraft(id, !selectedIds.has(id))
+  }
+
+  function addEditableRow() {
+    const draft = createEmptyDraft()
+
+    setDrafts((currentDrafts) => [...currentDrafts, draft])
+    setSelectedIds((current) => new Set([...current, draft.id]))
+  }
+
+  function shouldToggleRow(target: EventTarget | null) {
+    return target instanceof HTMLElement && !target.closest('button, input, [role="checkbox"]')
+  }
+
   return (
     <Dialog open={open} onOpenChange={resetDialog}>
       <DialogTrigger asChild>
@@ -683,8 +784,10 @@ function AddProductsDialog({
             {step === 'upload'
               ? 'Start with a purchase order PDF or skip directly to manual entry.'
               : step === 'processing'
-                ? 'Enter the purchase order brand before scanning the PDF.'
-                : 'Review and edit parsed products before saving.'}
+                ? 'The PDF is scanning in the background while you enter the brand.'
+                : step === 'select'
+                  ? 'Choose the parsed products to keep before editing them.'
+                  : 'Review selected products before saving.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -723,7 +826,9 @@ function AddProductsDialog({
               <div>
                 <p className="text-sm font-medium">Processing PDF</p>
                 <p className="text-muted-foreground text-sm">
-                  {pdfFile?.name ?? 'Selected purchase order'} will be scanned for line item SKUs and part numbers.
+                  {scanning
+                    ? `${pdfFile?.name ?? 'Selected purchase order'} is being scanned for line item SKUs and part numbers.`
+                    : `${pdfFile?.name ?? 'Selected purchase order'} has finished processing.`}
                 </p>
               </div>
               <div className="space-y-2">
@@ -733,14 +838,13 @@ function AddProductsDialog({
                   value={purchaseOrderBrand}
                   onChange={(event) => setPurchaseOrderBrand(event.target.value)}
                   placeholder="Brand for every line item"
-                  disabled={scanning}
                 />
               </div>
               {scanError ? (
                 <p className="text-destructive text-sm">{scanError}</p>
               ) : (
                 <p className="text-muted-foreground text-sm">
-                  The brand entered here will be applied to every parsed row on the edit page.
+                  The brand entered here will be applied to the parsed rows you keep.
                 </p>
               )}
             </div>
@@ -753,38 +857,90 @@ function AddProductsDialog({
               >
                 Back
               </Button>
+              {scanError ? (
+                <Button type="button" onClick={() => pdfFile && startPdfScan(pdfFile)} disabled={!pdfFile}>
+                  Try again
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  onClick={() => setStep('select')}
+                  disabled={!purchaseOrderBrand.trim() || scanning || drafts.length === 0}
+                >
+                  {scanning ? 'Scanning PDF...' : 'Review products'}
+                </Button>
+              )}
+            </DialogFooter>
+          </div>
+        ) : step === 'select' ? (
+          <div className="flex min-h-0 flex-col gap-4 overflow-hidden">
+            <div className="space-y-2 rounded-md border p-3">
+              <Label htmlFor="review-purchase-order-brand">Purchase order brand</Label>
+              <Input
+                id="review-purchase-order-brand"
+                value={purchaseOrderBrand}
+                onChange={(event) => setPurchaseOrderBrand(event.target.value)}
+                placeholder="Brand for every selected line item"
+              />
+            </div>
+            <div className="overflow-auto rounded-md border">
+              <div className="bg-muted/50 grid min-w-[760px] grid-cols-[3rem_1fr_1fr_1fr] items-center border-b px-3 py-3 text-sm font-medium">
+                <Checkbox
+                  checked={allSelected}
+                  onCheckedChange={(checked) => toggleAll(checked === true)}
+                  aria-label="Select all parsed products"
+                />
+                <div>SKU</div>
+                <div>Brand</div>
+                <div>Location</div>
+              </div>
+              <div className="max-h-[320px] min-w-[760px] overflow-y-auto">
+                {drafts.map((draft) => {
+                  const isSelected = selectedIds.has(draft.id)
+                  const reviewDraft = applyPurchaseOrderBrand(draft)
+
+                  return (
+                    <div
+                      key={draft.id}
+                      className={`grid cursor-pointer grid-cols-[3rem_1fr_1fr_1fr] items-center gap-3 border-b px-3 py-3 text-sm last:border-b-0 ${
+                        isSelected ? 'bg-primary/5' : 'hover:bg-muted/40'
+                      }`}
+                      onClick={(event) => {
+                        if (shouldToggleRow(event.target)) {
+                          toggleDraftSelection(draft.id)
+                        }
+                      }}
+                    >
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={(checked) => toggleDraft(draft.id, checked === true)}
+                        onClick={(event) => event.stopPropagation()}
+                        aria-label={`Keep ${draft.sku || 'blank product row'}`}
+                      />
+                      <div className="truncate font-medium">{reviewDraft.sku || '-'}</div>
+                      <div className="text-muted-foreground truncate">{reviewDraft.brand || '-'}</div>
+                      <div className="text-muted-foreground truncate">{reviewDraft.location || '-'}</div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setStep('processing')}>
+                Back
+              </Button>
               <Button
                 type="button"
-                onClick={handleScanPdf}
-                disabled={!purchaseOrderBrand.trim() || scanning}
+                disabled={selectedIds.size === 0 || !purchaseOrderBrand.trim()}
+                onClick={continueToEditSelectedProducts}
               >
-                {scanning ? 'Scanning PDF...' : 'Scan PDF'}
+                Edit {selectedIds.size} selected
               </Button>
             </DialogFooter>
           </div>
         ) : (
           <div className="flex min-h-0 flex-col gap-4 overflow-hidden">
-            <div className="grid gap-3 rounded-md border p-3 lg:grid-cols-[1fr_auto_auto_auto] lg:items-end">
-              <div className="space-y-2">
-                <Label htmlFor="bulk-value">Bulk value for selected rows</Label>
-                <Input
-                  id="bulk-value"
-                  value={bulkValue}
-                  onChange={(event) => setBulkValue(event.target.value)}
-                  placeholder="Value to apply"
-                />
-              </div>
-              <Button type="button" variant="outline" onClick={() => applyBulkValue('sku')}>
-                Apply SKU
-              </Button>
-              <Button type="button" variant="outline" onClick={() => applyBulkValue('brand')}>
-                Apply Brand
-              </Button>
-              <Button type="button" variant="outline" onClick={() => applyBulkValue('location')}>
-                Apply Location
-              </Button>
-            </div>
-
             <div className="overflow-auto rounded-md border">
               <div className="bg-muted/50 grid min-w-[760px] grid-cols-[3rem_1fr_1fr_1fr] items-center border-b px-3 py-3 text-sm font-medium">
                 <Checkbox
@@ -797,33 +953,61 @@ function AddProductsDialog({
                 <div>Location</div>
               </div>
               <div className="max-h-[320px] min-w-[760px] overflow-y-auto">
-                {drafts.map((draft) => (
-                  <div
-                    key={draft.id}
-                    className="grid grid-cols-[3rem_1fr_1fr_1fr] items-center gap-3 border-b px-3 py-2 last:border-b-0"
-                  >
-                    <Checkbox
-                      checked={selectedIds.has(draft.id)}
-                      onCheckedChange={(checked) => toggleDraft(draft.id, checked === true)}
-                      aria-label={`Select ${draft.sku || 'blank product row'}`}
-                    />
-                    <Input
-                      value={draft.sku}
-                      onChange={(event) => updateDraft(draft.id, 'sku', event.target.value)}
-                      placeholder="SKU"
-                    />
-                    <Input
-                      value={draft.brand}
-                      onChange={(event) => updateDraft(draft.id, 'brand', event.target.value)}
-                      placeholder="Brand"
-                    />
-                    <Input
-                      value={draft.location}
-                      onChange={(event) => updateDraft(draft.id, 'location', event.target.value)}
-                      placeholder="Location"
-                    />
-                  </div>
-                ))}
+                {drafts.map((draft, rowIndex) => {
+                  const isSelected = selectedIds.has(draft.id)
+
+                  return (
+                    <div
+                      key={draft.id}
+                      className={`grid cursor-pointer grid-cols-[3rem_1fr_1fr_1fr] items-center gap-3 border-b px-3 py-2 last:border-b-0 ${
+                        isSelected ? 'bg-primary/5' : 'hover:bg-muted/40'
+                      }`}
+                      onClick={(event) => {
+                        if (shouldToggleRow(event.target)) {
+                          toggleDraftSelection(draft.id)
+                        }
+                      }}
+                    >
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={(checked) => toggleDraft(draft.id, checked === true)}
+                        onClick={(event) => event.stopPropagation()}
+                        aria-label={`Select ${draft.sku || 'blank product row'}`}
+                      />
+                      {productFields.map((field) => {
+                        const isInFillRange =
+                          fillRange?.field === field &&
+                          rowIndex >= fillRange.start &&
+                          rowIndex <= fillRange.end
+
+                        return (
+                          <div
+                            key={field}
+                            className={`relative rounded-md ${isInFillRange ? 'ring-primary ring-2' : ''}`}
+                            onPointerEnter={() => updateFillSelectionTarget(draft.id)}
+                          >
+                            <Input
+                              className="pr-6"
+                              value={draft[field]}
+                              onChange={(event) => updateDraft(draft.id, field, event.target.value)}
+                              placeholder={field === 'sku' ? 'SKU' : field === 'brand' ? 'Brand' : 'Location'}
+                            />
+                            <button
+                              type="button"
+                              className="bg-primary absolute right-1.5 bottom-1.5 size-2 cursor-crosshair rounded-full opacity-70 transition-opacity hover:opacity-100"
+                              aria-label={`Fill ${field} from this cell`}
+                              onPointerDown={(event) => {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                beginFillSelection(draft.id, field, draft[field])
+                              }}
+                            />
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })}
               </div>
             </div>
 
@@ -831,7 +1015,7 @@ function AddProductsDialog({
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setDrafts((currentDrafts) => [...currentDrafts, createEmptyDraft()])}
+                onClick={addEditableRow}
               >
                 <PlusIcon className="size-4" />
                 Add row
@@ -840,7 +1024,7 @@ function AddProductsDialog({
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setStep(pdfFile ? 'processing' : 'upload')}
+                  onClick={() => setStep(pdfFile ? 'select' : 'upload')}
                 >
                   Back
                 </Button>
@@ -849,7 +1033,7 @@ function AddProductsDialog({
                   disabled={saveableDrafts.length === 0 || saving}
                   onClick={() => onSave(saveableDrafts)}
                 >
-                  {saving ? 'Saving...' : `Save ${saveableDrafts.length} item${saveableDrafts.length === 1 ? '' : 's'}`}
+                  {saving ? 'Saving...' : `Save ${saveableDrafts.length} selected`}
                 </Button>
               </DialogFooter>
             </div>
