@@ -60,7 +60,6 @@ export const scanPurchaseOrder = action({
     sessionToken: v.string(),
     fileName: v.string(),
     fileDataUrl: v.string(),
-    brand: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const session = await ctx.runQuery(internal.authData.getValidSession, {
@@ -76,8 +75,6 @@ export const scanPurchaseOrder = action({
     if (!apiKey) {
       throw new Error('Set OPENAI_API_KEY in Convex before scanning purchase orders.')
     }
-
-    const brand = (args.brand ?? '').trim()
 
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
@@ -103,9 +100,7 @@ export const scanPurchaseOrder = action({
             content: [
               {
                 type: 'input_text',
-                text: brand
-                  ? `The purchase order brand is "${brand}". Extract every line item SKU or part number from the attached PDF.`
-                  : 'Extract every line item SKU or part number from the attached PDF.',
+                text: 'Extract every line item SKU or part number from the attached PDF.',
               },
               {
                 type: 'input_file',
@@ -162,7 +157,6 @@ export const scanPurchaseOrder = action({
     return {
       products: skus.map((sku) => ({
         sku,
-        brand,
         location: '',
       })),
     }

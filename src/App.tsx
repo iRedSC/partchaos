@@ -36,18 +36,16 @@ const tableHeight = 520
 type InventoryItem = {
   _id: Id<'items'>
   sku: string
-  brand: string
   location: string
 }
 
 type ProductDraft = {
   id: string
   sku: string
-  brand: string
   location: string
 }
 
-type ProductField = 'sku' | 'brand' | 'location'
+type ProductField = 'sku' | 'location'
 type AddProductsStep = 'upload' | 'processing' | 'select' | 'edit'
 type FillSelection = {
   sourceId: string
@@ -56,7 +54,7 @@ type FillSelection = {
   value: string
 }
 
-const productFields: ProductField[] = ['sku', 'brand', 'location']
+const productFields: ProductField[] = ['sku', 'location']
 
 function messageFromError(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong.'
@@ -66,7 +64,6 @@ function createEmptyDraft(): ProductDraft {
   return {
     id: crypto.randomUUID(),
     sku: '',
-    brand: '',
     location: '',
   }
 }
@@ -122,9 +119,22 @@ function hydrateSkuFromExisting(
   return {
     ...draft,
     sku: existing.sku,
-    brand: existing.brand,
     location: existing.location,
   }
+}
+
+function applySkuPrefix(sku: string, prefix: string) {
+  const trimmedSku = sku.trim()
+  const trimmedPrefix = prefix.trim()
+
+  if (!trimmedSku || !trimmedPrefix) {
+    return trimmedSku
+  }
+
+  const prefixWithSeparator = `${trimmedPrefix}-`
+  return trimmedSku.toLowerCase().startsWith(prefixWithSeparator.toLowerCase())
+    ? trimmedSku
+    : `${prefixWithSeparator}${trimmedSku}`
 }
 
 function App() {
@@ -170,9 +180,7 @@ function App() {
       return inventoryItems
     }
 
-    return inventoryItems.filter((item) =>
-      fuzzyMatch(`${item.sku} ${item.brand} ${item.location}`, query),
-    )
+    return inventoryItems.filter((item) => fuzzyMatch(`${item.sku} ${item.location}`, query))
   }, [inventoryItems, search])
 
   async function handleCreatePasskey(event: FormEvent<HTMLFormElement>) {
@@ -259,7 +267,7 @@ function App() {
     try {
       await upsertItems({
         sessionToken,
-        products: products.map(({ sku, brand, location }) => ({ sku, brand, location })),
+        products: products.map(({ sku, location }) => ({ sku, location })),
       })
       setAddDialogOpen(false)
       setMessage('Inventory updated.')
@@ -270,7 +278,7 @@ function App() {
     }
   }
 
-  async function handleScanPurchaseOrder(file: File, brand: string) {
+  async function handleScanPurchaseOrder(file: File) {
     if (!sessionToken) {
       throw new Error('Sign in first.')
     }
@@ -280,13 +288,11 @@ function App() {
       sessionToken,
       fileName: file.name,
       fileDataUrl,
-      brand,
     })
 
     return result.products.map((product) => ({
       id: crypto.randomUUID(),
       sku: product.sku,
-      brand: product.brand,
       location: product.location,
     }))
   }
@@ -355,7 +361,7 @@ function App() {
                 className="pl-9"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Fuzzy search SKU, brand, location"
+                placeholder="Fuzzy search SKU or location"
               />
             </div>
           </div>
@@ -485,9 +491,8 @@ function InventoryTable({
 
   return (
     <div className="overflow-hidden rounded-md border">
-      <div className="bg-muted/50 grid grid-cols-[1.2fr_1fr_1fr_3rem] border-b px-4 py-3 text-sm font-medium">
+      <div className="bg-muted/50 grid grid-cols-[1.5fr_1fr_3rem] border-b px-4 py-3 text-sm font-medium">
         <div>SKU</div>
-        <div>Brand</div>
         <div>Location</div>
         <div className="sr-only">Remove</div>
       </div>
@@ -504,11 +509,10 @@ function InventoryTable({
               {visibleItems.map((item) => (
                 <div
                   key={item._id}
-                  className="grid grid-cols-[1.2fr_1fr_1fr_3rem] items-center border-b px-4 text-sm last:border-b-0"
+                  className="grid grid-cols-[1.5fr_1fr_3rem] items-center border-b px-4 text-sm last:border-b-0"
                   style={{ height: rowHeight }}
                 >
                   <div className="truncate font-medium">{item.sku}</div>
-                  <div className="text-muted-foreground truncate">{item.brand || '-'}</div>
                   <div className="text-muted-foreground truncate">{item.location || '-'}</div>
                   <Button
                     type="button"
@@ -542,12 +546,12 @@ function AddProductsDialog({
   existingItems: InventoryItem[]
   saving: boolean
   onOpenChange: (open: boolean) => void
-  onScan: (file: File, brand: string) => Promise<ProductDraft[]>
+  onScan: (file: File) => Promise<ProductDraft[]>
   onSave: (products: ProductDraft[]) => Promise<void>
 }) {
   const [step, setStep] = useState<AddProductsStep>('upload')
   const [pdfFile, setPdfFile] = useState<File | null>(null)
-  const [purchaseOrderBrand, setPurchaseOrderBrand] = useState('')
+  const [brandPrefix, setBrandPrefix] = useState('')
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<ProductDraft[]>([createEmptyDraft()])
@@ -620,7 +624,7 @@ function AddProductsDialog({
   function resetDraftState() {
     setStep('upload')
     setPdfFile(null)
-    setPurchaseOrderBrand('')
+    setBrandPrefix('')
     setScanning(false)
     setScanError(null)
     setDrafts([createEmptyDraft()])
@@ -674,7 +678,7 @@ function AddProductsDialog({
     setScanError(null)
 
     try {
-      const parsedDrafts = await onScan(file, '')
+      const parsedDrafts = await onScan(file)
 
       if (activeScanId.current !== scanId) {
         return
@@ -709,14 +713,13 @@ function AddProductsDialog({
     )
   }
 
-  function applyPurchaseOrderBrand(draft: ProductDraft) {
-    const brand = purchaseOrderBrand.trim()
-
-    return brand ? { ...draft, brand } : draft
+  function applyBrandPrefix(draft: ProductDraft) {
+    const sku = applySkuPrefix(draft.sku, brandPrefix)
+    return hydrateSkuFromExisting({ ...draft, sku }, existingBySku)
   }
 
   function continueToEditSelectedProducts() {
-    const keptDrafts = drafts.filter((draft) => selectedIds.has(draft.id)).map(applyPurchaseOrderBrand)
+    const keptDrafts = drafts.filter((draft) => selectedIds.has(draft.id)).map(applyBrandPrefix)
 
     setDrafts(keptDrafts)
     setSelectedIds(new Set(keptDrafts.map((draft) => draft.id)))
@@ -784,7 +787,7 @@ function AddProductsDialog({
             {step === 'upload'
               ? 'Start with a purchase order PDF or skip directly to manual entry.'
               : step === 'processing'
-                ? 'The PDF is scanning in the background while you enter the brand.'
+                ? 'The PDF is scanning in the background while you enter the brand prefix.'
                 : step === 'select'
                   ? 'Choose the parsed products to keep before editing them.'
                   : 'Review selected products before saving.'}
@@ -832,19 +835,19 @@ function AddProductsDialog({
                 </p>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="purchase-order-brand">Purchase order brand</Label>
+                <Label htmlFor="purchase-order-brand-prefix">Brand prefix</Label>
                 <Input
-                  id="purchase-order-brand"
-                  value={purchaseOrderBrand}
-                  onChange={(event) => setPurchaseOrderBrand(event.target.value)}
-                  placeholder="Brand for every line item"
+                  id="purchase-order-brand-prefix"
+                  value={brandPrefix}
+                  onChange={(event) => setBrandPrefix(event.target.value)}
+                  placeholder="Prefix for every SKU"
                 />
               </div>
               {scanError ? (
                 <p className="text-destructive text-sm">{scanError}</p>
               ) : (
                 <p className="text-muted-foreground text-sm">
-                  The brand entered here will be applied to the parsed rows you keep.
+                  The prefix entered here will be prepended to each parsed SKU as PREFIX-SKU.
                 </p>
               )}
             </div>
@@ -865,7 +868,7 @@ function AddProductsDialog({
                 <Button
                   type="button"
                   onClick={() => setStep('select')}
-                  disabled={!purchaseOrderBrand.trim() || scanning || drafts.length === 0}
+                  disabled={!brandPrefix.trim() || scanning || drafts.length === 0}
                 >
                   {scanning ? 'Scanning PDF...' : 'Review products'}
                 </Button>
@@ -875,34 +878,33 @@ function AddProductsDialog({
         ) : step === 'select' ? (
           <div className="flex min-h-0 flex-col gap-4 overflow-hidden">
             <div className="space-y-2 rounded-md border p-3">
-              <Label htmlFor="review-purchase-order-brand">Purchase order brand</Label>
+              <Label htmlFor="review-purchase-order-brand-prefix">Brand prefix</Label>
               <Input
-                id="review-purchase-order-brand"
-                value={purchaseOrderBrand}
-                onChange={(event) => setPurchaseOrderBrand(event.target.value)}
-                placeholder="Brand for every selected line item"
+                id="review-purchase-order-brand-prefix"
+                value={brandPrefix}
+                onChange={(event) => setBrandPrefix(event.target.value)}
+                placeholder="Prefix for every selected SKU"
               />
             </div>
             <div className="overflow-auto rounded-md border">
-              <div className="bg-muted/50 grid min-w-[760px] grid-cols-[3rem_1fr_1fr_1fr] items-center border-b px-3 py-3 text-sm font-medium">
+              <div className="bg-muted/50 grid min-w-[640px] grid-cols-[3rem_1.5fr_1fr] items-center border-b px-3 py-3 text-sm font-medium">
                 <Checkbox
                   checked={allSelected}
                   onCheckedChange={(checked) => toggleAll(checked === true)}
                   aria-label="Select all parsed products"
                 />
                 <div>SKU</div>
-                <div>Brand</div>
                 <div>Location</div>
               </div>
-              <div className="max-h-[320px] min-w-[760px] overflow-y-auto">
+              <div className="max-h-[320px] min-w-[640px] overflow-y-auto">
                 {drafts.map((draft) => {
                   const isSelected = selectedIds.has(draft.id)
-                  const reviewDraft = applyPurchaseOrderBrand(draft)
+                  const reviewDraft = applyBrandPrefix(draft)
 
                   return (
                     <div
                       key={draft.id}
-                      className={`grid cursor-pointer grid-cols-[3rem_1fr_1fr_1fr] items-center gap-3 border-b px-3 py-3 text-sm last:border-b-0 ${
+                      className={`grid cursor-pointer grid-cols-[3rem_1.5fr_1fr] items-center gap-3 border-b px-3 py-3 text-sm last:border-b-0 ${
                         isSelected ? 'bg-primary/5' : 'hover:bg-muted/40'
                       }`}
                       onClick={(event) => {
@@ -918,7 +920,6 @@ function AddProductsDialog({
                         aria-label={`Keep ${draft.sku || 'blank product row'}`}
                       />
                       <div className="truncate font-medium">{reviewDraft.sku || '-'}</div>
-                      <div className="text-muted-foreground truncate">{reviewDraft.brand || '-'}</div>
                       <div className="text-muted-foreground truncate">{reviewDraft.location || '-'}</div>
                     </div>
                   )
@@ -932,7 +933,7 @@ function AddProductsDialog({
               </Button>
               <Button
                 type="button"
-                disabled={selectedIds.size === 0 || !purchaseOrderBrand.trim()}
+                disabled={selectedIds.size === 0 || !brandPrefix.trim()}
                 onClick={continueToEditSelectedProducts}
               >
                 Edit {selectedIds.size} selected
@@ -942,24 +943,23 @@ function AddProductsDialog({
         ) : (
           <div className="flex min-h-0 flex-col gap-4 overflow-hidden">
             <div className="overflow-auto rounded-md border">
-              <div className="bg-muted/50 grid min-w-[760px] grid-cols-[3rem_1fr_1fr_1fr] items-center border-b px-3 py-3 text-sm font-medium">
+              <div className="bg-muted/50 grid min-w-[640px] grid-cols-[3rem_1.5fr_1fr] items-center border-b px-3 py-3 text-sm font-medium">
                 <Checkbox
                   checked={allSelected}
                   onCheckedChange={(checked) => toggleAll(checked === true)}
                   aria-label="Select all products"
                 />
                 <div>SKU</div>
-                <div>Brand</div>
                 <div>Location</div>
               </div>
-              <div className="max-h-[320px] min-w-[760px] overflow-y-auto">
+              <div className="max-h-[320px] min-w-[640px] overflow-y-auto">
                 {drafts.map((draft, rowIndex) => {
                   const isSelected = selectedIds.has(draft.id)
 
                   return (
                     <div
                       key={draft.id}
-                      className={`grid cursor-pointer grid-cols-[3rem_1fr_1fr_1fr] items-center gap-3 border-b px-3 py-2 last:border-b-0 ${
+                      className={`grid cursor-pointer grid-cols-[3rem_1.5fr_1fr] items-center gap-3 border-b px-3 py-2 last:border-b-0 ${
                         isSelected ? 'bg-primary/5' : 'hover:bg-muted/40'
                       }`}
                       onClick={(event) => {
@@ -990,7 +990,7 @@ function AddProductsDialog({
                               className="pr-6"
                               value={draft[field]}
                               onChange={(event) => updateDraft(draft.id, field, event.target.value)}
-                              placeholder={field === 'sku' ? 'SKU' : field === 'brand' ? 'Brand' : 'Location'}
+                              placeholder={field === 'sku' ? 'SKU' : 'Location'}
                             />
                             <button
                               type="button"

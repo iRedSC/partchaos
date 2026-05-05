@@ -29,7 +29,6 @@ export const upsertMany = mutation({
     products: v.array(
       v.object({
         sku: v.string(),
-        brand: v.string(),
         location: v.string(),
       }),
     ),
@@ -41,7 +40,6 @@ export const upsertMany = mutation({
     const products = args.products
       .map((product) => ({
         sku: product.sku.trim(),
-        brand: product.brand.trim(),
         location: product.location.trim(),
       }))
       .filter((product) => product.sku)
@@ -58,7 +56,6 @@ export const upsertMany = mutation({
 
       if (existing) {
         await ctx.db.patch(existing._id, {
-          brand: product.brand,
           location: product.location,
           updatedAt: now,
         })

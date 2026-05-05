@@ -26,7 +26,7 @@ export default defineSchema({
 
   items: defineTable({
     sku: v.string(),
-    brand: v.string(),
+    brand: v.optional(v.string()),
     location: v.string(),
     createdAt: v.number(),
     updatedAt: v.number(),
