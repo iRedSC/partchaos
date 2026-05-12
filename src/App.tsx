@@ -36,6 +36,7 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command'
+import { MobileBarcodeScannerModal } from '@/components/test/MobileBarcodeScannerModal'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 
@@ -705,6 +706,7 @@ function App() {
                   placeholder="Fuzzy search SKU or location"
                 />
               </div>
+              <MobileBarcodeScannerModal onScan={setSearch} />
               {canQuickAddSearch ? (
                 <Button
                   type="button"
