@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
 import { useAction, useMutation, useQuery } from 'convex/react'
-import { DownloadIcon, PlusIcon, SearchIcon, Trash2Icon, UploadIcon } from 'lucide-react'
+import { CheckIcon, DownloadIcon, PlusIcon, SearchIcon, Trash2Icon, UploadIcon } from 'lucide-react'
 
 import { api } from '../convex/_generated/api'
 import type { Id } from '../convex/_generated/dataModel'
@@ -29,6 +29,15 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Command,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { cn } from '@/lib/utils'
 
 const sessionStorageKey = 'partchaos.session'
 const rowHeight = 56
@@ -287,6 +296,18 @@ function applySkuPrefix(sku: string, prefix: string) {
     : `${prefixWithSeparator}${trimmedSku}`
 }
 
+function getLocationOptions(existingItems: InventoryItem[]) {
+  return Array.from(
+    new Set(
+      existingItems
+        .map((item) => item.location.trim())
+        .filter(Boolean),
+    ),
+  ).sort((firstLocation, secondLocation) =>
+    firstLocation.localeCompare(secondLocation, undefined, { numeric: true, sensitivity: 'base' }),
+  )
+}
+
 function SimilarSkuButton({ sku, onApply }: { sku: string; onApply: () => void }) {
   const tooltipId = useId()
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -359,6 +380,86 @@ function SimilarSkuButton({ sku, onApply }: { sku: string; onApply: () => void }
           )
         : null}
     </>
+  )
+}
+
+function LocationCombobox({
+  value,
+  options,
+  inputRef,
+  onChange,
+}: {
+  value: string
+  options: string[]
+  inputRef?: React.Ref<HTMLInputElement>
+  onChange: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const trimmedValue = value.trim()
+  const matchingOptions = options.filter((option) => fuzzyMatch(option, value))
+  const hasMatches = matchingOptions.length > 0
+
+  function selectLocation(location: string) {
+    onChange(location)
+    setOpen(false)
+  }
+
+  return (
+    <Command shouldFilter={false}>
+      <Popover open={open && hasMatches}>
+        <PopoverAnchor asChild>
+          <CommandInput
+            ref={inputRef}
+            className="h-9 px-3 py-1"
+            wrapperClassName="h-9 rounded-md border bg-transparent shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-ring/50 focus-within:ring-[3px] [&>svg]:hidden"
+            role="combobox"
+            aria-expanded={open && hasMatches}
+            value={value}
+            onFocus={() => setOpen(hasMatches)}
+            onBlur={(event) => {
+              const nextFocusedElement = event.relatedTarget
+
+              if (nextFocusedElement instanceof HTMLElement && nextFocusedElement.closest('[data-slot="popover-content"]')) {
+                return
+              }
+
+              setOpen(false)
+            }}
+            onValueChange={(nextValue) => {
+              onChange(nextValue)
+              setOpen(options.some((option) => fuzzyMatch(option, nextValue)))
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                setOpen(false)
+              }
+            }}
+            placeholder="Location"
+          />
+        </PopoverAnchor>
+        <PopoverContent
+          className="w-[var(--radix-popover-trigger-width)] min-w-56 p-0"
+          align="start"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
+          <CommandList>
+            <CommandGroup>
+              {matchingOptions.map((location) => (
+                <CommandItem key={location} value={location} onSelect={() => selectLocation(location)}>
+                  <CheckIcon
+                    className={cn(
+                      'size-4',
+                      location.toLowerCase() === trimmedValue.toLowerCase() ? 'opacity-100' : 'opacity-0',
+                    )}
+                  />
+                  {location}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </PopoverContent>
+      </Popover>
+    </Command>
   )
 }
 
@@ -864,6 +965,7 @@ function AddProductsDialog({
     () => new Map(existingItems.map((item) => [item.sku.toLowerCase(), item])),
     [existingItems],
   )
+  const locationOptions = useMemo(() => getLocationOptions(existingItems), [existingItems])
   const allSelected = drafts.length > 0 && selectedIds.size === drafts.length
   const selectedDrafts = drafts.filter((draft) => selectedIds.has(draft.id))
   const saveableDrafts = selectedDrafts.filter((draft) => draft.sku.trim())
@@ -1340,13 +1442,21 @@ function AddProductsDialog({
                             className={`relative rounded-md ${isInFillRange ? 'ring-primary ring-2' : ''}`}
                             onPointerEnter={() => updateFillSelectionTarget(draft.id)}
                           >
-                            <Input
-                              ref={rowIndex === 0 && field === 'location' ? firstLocationInputRef : undefined}
-                              className={similarSku ? 'pr-16' : 'pr-6'}
-                              value={draft[field]}
-                              onChange={(event) => updateDraft(draft.id, field, event.target.value)}
-                              placeholder={field === 'sku' ? 'SKU' : 'Location'}
-                            />
+                            {field === 'location' ? (
+                              <LocationCombobox
+                                inputRef={rowIndex === 0 ? firstLocationInputRef : undefined}
+                                value={draft.location}
+                                options={locationOptions}
+                                onChange={(value) => updateDraft(draft.id, 'location', value)}
+                              />
+                            ) : (
+                              <Input
+                                className={similarSku ? 'pr-16' : 'pr-6'}
+                                value={draft.sku}
+                                onChange={(event) => updateDraft(draft.id, 'sku', event.target.value)}
+                                placeholder="SKU"
+                              />
+                            )}
                             {similarSku ? (
                               <SimilarSkuButton
                                 sku={similarSku}
