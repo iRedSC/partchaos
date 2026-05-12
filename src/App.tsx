@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
@@ -743,6 +743,7 @@ function InventoryTable({
   const visibleItems = items.slice(startIndex, startIndex + visibleCount)
   const totalRowsHeight = items.length * rowHeight
   const virtualTableHeight = Math.max(totalRowsHeight, tableViewportHeight)
+  const hasItems = items.length > 0
 
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current
@@ -756,7 +757,7 @@ function InventoryTable({
     setScrollTop(0)
   }, [items])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scrollContainer = scrollContainerRef.current
 
     if (!scrollContainer) {
@@ -773,7 +774,7 @@ function InventoryTable({
     observer.observe(scrollContainer)
 
     return () => observer.disconnect()
-  }, [])
+  }, [hasItems])
 
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 basis-0 flex-col overflow-hidden rounded-md border">
