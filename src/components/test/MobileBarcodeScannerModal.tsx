@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { BrowserMultiFormatReader as BrowserMultiFormatReaderInstance } from '@zxing/browser'
 import { ScanBarcodeIcon } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -33,10 +34,12 @@ type MobileBarcodeScannerModalProps = {
 export function MobileBarcodeScannerModal({ onScan }: MobileBarcodeScannerModalProps) {
   const [open, setOpen] = useState(false)
   const [holdingScan, setHoldingScan] = useState(false)
+  const [scannerReady, setScannerReady] = useState(false)
   const [status, setStatus] = useState('Camera preview starts when this test scanner opens.')
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const detectorRef = useRef<BarcodeDetectorInstance | null>(null)
+  const zxingReaderRef = useRef<BrowserMultiFormatReaderInstance | null>(null)
   const animationFrameRef = useRef<number | null>(null)
   const scanActiveRef = useRef(false)
   const detectingRef = useRef(false)
@@ -54,15 +57,29 @@ export function MobileBarcodeScannerModal({ onScan }: MobileBarcodeScannerModalP
     async function startPreview() {
       scanCompleteRef.current = false
       detectorRef.current = null
+      zxingReaderRef.current = null
+      setScannerReady(false)
       setStatus('Starting camera preview...')
 
       const Detector = (window as BarcodeWindow).BarcodeDetector
 
       if (!Detector) {
-        setStatus('Barcode detection is not available in this browser.')
+        try {
+          const { BrowserMultiFormatReader } = await import('@zxing/browser')
+
+          if (cancelled) {
+            return
+          }
+
+          zxingReaderRef.current = new BrowserMultiFormatReader()
+        } catch {
+          setStatus('Could not load the ZXing barcode scanner.')
+          return
+        }
       } else {
         detectorRef.current = new Detector()
       }
+      setScannerReady(true)
 
       if (!navigator.mediaDevices?.getUserMedia) {
         setStatus('Camera access is not available in this browser.')
@@ -92,7 +109,7 @@ export function MobileBarcodeScannerModal({ onScan }: MobileBarcodeScannerModalP
         setStatus(
           detectorRef.current
             ? 'Hold the scan button while the barcode is visible.'
-            : 'Camera preview is available, but this browser cannot detect barcodes.',
+            : 'Hold the scan button while the barcode is visible. Using ZXing fallback.',
         )
       } catch (error) {
         setStatus(error instanceof Error ? error.message : 'Could not start the camera.')
@@ -111,6 +128,9 @@ export function MobileBarcodeScannerModal({ onScan }: MobileBarcodeScannerModalP
   function stopCamera() {
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
+    zxingReaderRef.current = null
+    detectorRef.current = null
+    setScannerReady(false)
 
     if (videoRef.current) {
       videoRef.current.srcObject = null
@@ -128,30 +148,54 @@ export function MobileBarcodeScannerModal({ onScan }: MobileBarcodeScannerModalP
     }
   }
 
+  async function readBarcodeFromVideo(video: HTMLVideoElement) {
+    const detector = detectorRef.current
+
+    if (detector) {
+      const results = await detector.detect(video)
+      return results.find((result) => result.rawValue.trim())?.rawValue ?? null
+    }
+
+    const zxingReader = zxingReaderRef.current
+
+    if (!zxingReader) {
+      return null
+    }
+
+    return zxingReader.decode(video).getText()
+  }
+
+  function isExpectedZxingMiss(error: unknown) {
+    return (
+      error instanceof Error &&
+      ['ChecksumException', 'FormatException', 'NotFoundException'].includes(error.name)
+    )
+  }
+
   async function scanFrame() {
     if (!scanActiveRef.current || scanCompleteRef.current) {
       return
     }
 
     const video = videoRef.current
-    const detector = detectorRef.current
 
-    if (video && detector && !detectingRef.current && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    if (video && scannerReady && !detectingRef.current && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       detectingRef.current = true
 
       try {
-        const results = await detector.detect(video)
-        const barcode = results.find((result) => result.rawValue.trim())
+        const barcode = await readBarcodeFromVideo(video)
 
         if (barcode) {
           scanCompleteRef.current = true
           stopScanLoop()
-          onScan(barcode.rawValue)
+          onScan(barcode)
           setOpen(false)
           return
         }
       } catch (error) {
-        setStatus(error instanceof Error ? error.message : 'Could not scan this frame.')
+        if (!isExpectedZxingMiss(error)) {
+          setStatus(error instanceof Error ? error.message : 'Could not scan this frame.')
+        }
       } finally {
         detectingRef.current = false
       }
@@ -165,8 +209,8 @@ export function MobileBarcodeScannerModal({ onScan }: MobileBarcodeScannerModalP
       return
     }
 
-    if (!detectorRef.current) {
-      setStatus('Barcode detection is not available in this browser.')
+    if (!scannerReady) {
+      setStatus('Barcode scanner is not ready yet.')
       return
     }
 
@@ -222,7 +266,7 @@ export function MobileBarcodeScannerModal({ onScan }: MobileBarcodeScannerModalP
           <Button
             type="button"
             className="h-12 w-full touch-none"
-            disabled={!detectorRef.current}
+            disabled={!scannerReady}
             onPointerDown={startHoldScan}
             onPointerUp={endHoldScan}
             onPointerLeave={endHoldScan}
