@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
 import { useAction, useMutation, useQuery } from 'convex/react'
-import { PlusIcon, SearchIcon, Trash2Icon, UploadIcon } from 'lucide-react'
+import { DownloadIcon, PlusIcon, SearchIcon, Trash2Icon, UploadIcon } from 'lucide-react'
 
 import { api } from '../convex/_generated/api'
 import type { Id } from '../convex/_generated/dataModel'
@@ -43,6 +44,11 @@ type ProductDraft = {
   id: string
   sku: string
   location: string
+}
+
+type QuickAddRequest = {
+  id: string
+  sku: string
 }
 
 type ProductField = 'sku' | 'location'
@@ -123,6 +129,150 @@ function hydrateSkuFromExisting(
   }
 }
 
+function normalizeSkuForSimilarity(sku: string) {
+  return sku.replace(/[^a-z0-9]/gi, '').toLowerCase()
+}
+
+function removeSkuPrefix(sku: string) {
+  const dashIndex = sku.indexOf('-')
+  return dashIndex === -1 ? sku : sku.slice(dashIndex + 1)
+}
+
+function nonAlphanumericSegments(sku: string) {
+  const segments: string[] = []
+  let segment = ''
+
+  for (const char of sku) {
+    if (/^[a-z0-9]$/i.test(char)) {
+      segments.push(segment)
+      segment = ''
+    } else {
+      segment += char
+    }
+  }
+
+  segments.push(segment)
+  return segments
+}
+
+function editDistance(value: string, candidate: string) {
+  const distances = Array.from({ length: value.length + 1 }, (_, valueIndex) =>
+    Array.from({ length: candidate.length + 1 }, (_, candidateIndex) =>
+      valueIndex === 0 ? candidateIndex : candidateIndex === 0 ? valueIndex : 0,
+    ),
+  )
+
+  for (let valueIndex = 1; valueIndex <= value.length; valueIndex += 1) {
+    for (let candidateIndex = 1; candidateIndex <= candidate.length; candidateIndex += 1) {
+      const substitutionCost = value[valueIndex - 1] === candidate[candidateIndex - 1] ? 0 : 1
+
+      distances[valueIndex][candidateIndex] = Math.min(
+        distances[valueIndex - 1][candidateIndex] + 1,
+        distances[valueIndex][candidateIndex - 1] + 1,
+        distances[valueIndex - 1][candidateIndex - 1] + substitutionCost,
+      )
+    }
+  }
+
+  return distances[value.length][candidate.length]
+}
+
+function nonAlphanumericDifference(value: string, candidate: string) {
+  const valueSegments = nonAlphanumericSegments(value)
+  const candidateSegments = nonAlphanumericSegments(candidate)
+
+  return valueSegments.reduce(
+    (difference, segment, index) => difference + editDistance(segment, candidateSegments[index] ?? ''),
+    0,
+  )
+}
+
+function getSeparatorSkuSuggestion(trimmedSku: string, normalizedSku: string, existingItems: InventoryItem[]) {
+  let suggestion: { sku: string; difference: number } | null = null
+
+  for (const item of existingItems) {
+    const existingSku = item.sku.trim()
+    const candidateSkus = [
+      { sku: existingSku, allowsExactSeparatorMatch: false },
+      { sku: removeSkuPrefix(existingSku), allowsExactSeparatorMatch: true },
+    ]
+    const match = candidateSkus.find((candidate) => {
+      if (
+        existingSku.toLowerCase() === trimmedSku.toLowerCase() ||
+        normalizeSkuForSimilarity(candidate.sku) !== normalizedSku
+      ) {
+        return false
+      }
+
+      const difference = nonAlphanumericDifference(trimmedSku, candidate.sku)
+      return candidate.allowsExactSeparatorMatch ? difference <= 3 : difference >= 1 && difference <= 3
+    })
+
+    if (!match) {
+      continue
+    }
+
+    const difference = nonAlphanumericDifference(trimmedSku, match.sku)
+
+    if (!suggestion || difference < suggestion.difference) {
+      suggestion = { sku: item.sku, difference }
+    }
+  }
+
+  return suggestion?.sku ?? null
+}
+
+function getSingleCharacterSkuSuggestion(
+  trimmedSku: string,
+  normalizedSku: string,
+  existingItems: InventoryItem[],
+) {
+  let suggestion: string | null = null
+
+  for (const item of existingItems) {
+    const existingSku = item.sku.trim()
+
+    if (existingSku.toLowerCase() === trimmedSku.toLowerCase()) {
+      continue
+    }
+
+    const candidateSkus = [existingSku, removeSkuPrefix(existingSku)]
+    const isOneCharacterOff = candidateSkus.some(
+      (candidate) => editDistance(normalizedSku, normalizeSkuForSimilarity(candidate)) === 1,
+    )
+
+    if (!isOneCharacterOff) {
+      continue
+    }
+
+    if (suggestion) {
+      return null
+    }
+
+    suggestion = item.sku
+  }
+
+  return suggestion
+}
+
+function getSimilarSkuSuggestion(sku: string, existingItems: InventoryItem[]) {
+  const trimmedSku = sku.trim()
+  const normalizedSku = normalizeSkuForSimilarity(trimmedSku)
+
+  if (!normalizedSku) {
+    return null
+  }
+
+  if (existingItems.some((item) => item.sku.trim().toLowerCase() === trimmedSku.toLowerCase())) {
+    return null
+  }
+
+  return (
+    getSeparatorSkuSuggestion(trimmedSku, normalizedSku, existingItems) ??
+    getSingleCharacterSkuSuggestion(trimmedSku, normalizedSku, existingItems)
+  )
+}
+
 function applySkuPrefix(sku: string, prefix: string) {
   const trimmedSku = sku.trim()
   const trimmedPrefix = prefix.trim()
@@ -137,6 +287,81 @@ function applySkuPrefix(sku: string, prefix: string) {
     : `${prefixWithSeparator}${trimmedSku}`
 }
 
+function SimilarSkuButton({ sku, onApply }: { sku: string; onApply: () => void }) {
+  const tooltipId = useId()
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const [tooltipPosition, setTooltipPosition] = useState<{ top: number; left: number } | null>(null)
+
+  function showTooltip() {
+    const rect = buttonRef.current?.getBoundingClientRect()
+
+    if (!rect) {
+      return
+    }
+
+    setTooltipPosition({
+      top: rect.bottom + 6,
+      left: rect.right,
+    })
+  }
+
+  function hideTooltip() {
+    setTooltipPosition(null)
+  }
+
+  useEffect(() => {
+    if (!tooltipPosition) {
+      return
+    }
+
+    window.addEventListener('scroll', showTooltip, true)
+    window.addEventListener('resize', showTooltip)
+    return () => {
+      window.removeEventListener('scroll', showTooltip, true)
+      window.removeEventListener('resize', showTooltip)
+    }
+  }, [tooltipPosition])
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="absolute top-1/2 right-7 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-sm border border-yellow-300 bg-yellow-100 text-yellow-700 shadow-xs transition-colors outline-none hover:bg-yellow-200 hover:text-yellow-800 focus-visible:ring-3 focus-visible:ring-yellow-300/60"
+        aria-describedby={tooltipPosition ? tooltipId : undefined}
+        aria-label={`Use existing SKU ${sku}`}
+        onMouseEnter={showTooltip}
+        onMouseLeave={hideTooltip}
+        onFocus={showTooltip}
+        onBlur={hideTooltip}
+        onClick={(event) => {
+          event.stopPropagation()
+          onApply()
+        }}
+      >
+        <DownloadIcon className="size-3.5" />
+      </button>
+      {tooltipPosition
+        ? createPortal(
+            <div
+              id={tooltipId}
+              role="tooltip"
+              className="bg-popover text-popover-foreground border-border pointer-events-none fixed z-50 whitespace-nowrap rounded-md border px-2 py-1 text-xs font-medium shadow-md"
+              style={{
+                top: tooltipPosition.top,
+                left: tooltipPosition.left,
+                transform: 'translateX(-100%)',
+              }}
+            >
+              Similar SKU already exists: {sku}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  )
+}
+
 function App() {
   const [password, setPassword] = useState('')
   const [sessionToken, setSessionToken] = useState(() =>
@@ -146,6 +371,7 @@ function App() {
   const [message, setMessage] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [addDialogOpen, setAddDialogOpen] = useState(false)
+  const [quickAddRequest, setQuickAddRequest] = useState<QuickAddRequest | null>(null)
 
   const passkeyStatus = useQuery(api.auth.passkeyStatus)
   const sessionStatus = useQuery(
@@ -182,6 +408,7 @@ function App() {
 
     return inventoryItems.filter((item) => fuzzyMatch(`${item.sku} ${item.location}`, query))
   }, [inventoryItems, search])
+  const canQuickAddSearch = items !== undefined && Boolean(search.trim()) && filteredItems.length === 0
 
   async function handleCreatePasskey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -278,6 +505,17 @@ function App() {
     }
   }
 
+  function handleQuickAddSearch() {
+    const sku = search.trim()
+
+    if (!sku) {
+      return
+    }
+
+    setQuickAddRequest({ id: crypto.randomUUID(), sku })
+    setAddDialogOpen(true)
+  }
+
   async function handleScanPurchaseOrder(file: File) {
     if (!sessionToken) {
       throw new Error('Sign in first.')
@@ -327,6 +565,7 @@ function App() {
           <AddProductsDialog
             open={addDialogOpen}
             existingItems={inventoryItems}
+            quickAddRequest={quickAddRequest}
             saving={busy === 'save-products'}
             onOpenChange={setAddDialogOpen}
             onScan={handleScanPurchaseOrder}
@@ -355,14 +594,26 @@ function App() {
                   : `${filteredItems.length} of ${inventoryItems.length} products`}
               </CardDescription>
             </div>
-            <div className="relative w-full sm:max-w-sm">
-              <SearchIcon className="text-muted-foreground absolute top-1/2 left-3 size-4 -translate-y-1/2" />
-              <Input
-                className="pl-9"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Fuzzy search SKU or location"
-              />
+            <div className="flex w-full gap-2 sm:max-w-sm">
+              <div className="relative min-w-0 flex-1">
+                <SearchIcon className="text-muted-foreground absolute top-1/2 left-3 size-4 -translate-y-1/2" />
+                <Input
+                  className="pl-9"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Fuzzy search SKU or location"
+                />
+              </div>
+              {canQuickAddSearch ? (
+                <Button
+                  type="button"
+                  size="icon"
+                  aria-label={`Add ${search.trim()}`}
+                  onClick={handleQuickAddSearch}
+                >
+                  <PlusIcon className="size-4" />
+                </Button>
+              ) : null}
             </div>
           </div>
         </CardHeader>
@@ -570,6 +821,7 @@ function InventoryTable({
 function AddProductsDialog({
   open,
   existingItems,
+  quickAddRequest,
   saving,
   onOpenChange,
   onScan,
@@ -577,6 +829,7 @@ function AddProductsDialog({
 }: {
   open: boolean
   existingItems: InventoryItem[]
+  quickAddRequest: QuickAddRequest | null
   saving: boolean
   onOpenChange: (open: boolean) => void
   onScan: (file: File) => Promise<ProductDraft[]>
@@ -591,6 +844,9 @@ function AddProductsDialog({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [fillSelection, setFillSelection] = useState<FillSelection | null>(null)
   const activeScanId = useRef(0)
+  const firstLocationInputRef = useRef<HTMLInputElement>(null)
+  const shouldFocusLocationOnEdit = useRef(false)
+  const handledQuickAddRequestId = useRef<string | null>(null)
   const existingBySku = useMemo(
     () => new Map(existingItems.map((item) => [item.sku.toLowerCase(), item])),
     [existingItems],
@@ -654,6 +910,47 @@ function AddProductsDialog({
     return () => window.removeEventListener('pointerup', finishFillSelection)
   }, [existingBySku, fillSelection])
 
+  useEffect(() => {
+    if (!open || !quickAddRequest || handledQuickAddRequestId.current === quickAddRequest.id) {
+      return
+    }
+
+    const draft = hydrateSkuFromExisting(
+      { ...createEmptyDraft(), sku: quickAddRequest.sku },
+      existingBySku,
+    )
+
+    handledQuickAddRequestId.current = quickAddRequest.id
+    setPdfFile(null)
+    setBrandPrefix('')
+    setScanning(false)
+    setScanError(null)
+    setDrafts([draft])
+    setSelectedIds(new Set([draft.id]))
+    setFillSelection(null)
+    setStep('edit')
+    shouldFocusLocationOnEdit.current = true
+    activeScanId.current += 1
+  }, [existingBySku, open, quickAddRequest])
+
+  useEffect(() => {
+    if (!open || step !== 'edit' || !shouldFocusLocationOnEdit.current) {
+      return
+    }
+
+    shouldFocusLocationOnEdit.current = false
+    const focusLocation = () => {
+      firstLocationInputRef.current?.focus()
+    }
+    const frameId = window.requestAnimationFrame(focusLocation)
+    const timeoutId = window.setTimeout(focusLocation, 0)
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      window.clearTimeout(timeoutId)
+    }
+  }, [open, step])
+
   function resetDraftState() {
     setStep('upload')
     setPdfFile(null)
@@ -663,6 +960,7 @@ function AddProductsDialog({
     setDrafts([createEmptyDraft()])
     setSelectedIds(new Set())
     setFillSelection(null)
+    shouldFocusLocationOnEdit.current = false
     activeScanId.current += 1
   }
 
@@ -743,6 +1041,14 @@ function AddProductsDialog({
         const updatedDraft = { ...draft, [field]: value }
         return field === 'sku' ? hydrateSkuFromExisting(updatedDraft, existingBySku) : updatedDraft
       }),
+    )
+  }
+
+  function applySkuSuggestion(id: string, sku: string) {
+    setDrafts((currentDrafts) =>
+      currentDrafts.map((draft) =>
+        draft.id === id ? hydrateSkuFromExisting({ ...draft, sku }, existingBySku) : draft,
+      ),
     )
   }
 
@@ -1012,6 +1318,8 @@ function AddProductsDialog({
                           fillRange?.field === field &&
                           rowIndex >= fillRange.start &&
                           rowIndex <= fillRange.end
+                        const similarSku =
+                          field === 'sku' ? getSimilarSkuSuggestion(draft.sku, existingItems) : null
 
                         return (
                           <div
@@ -1020,11 +1328,20 @@ function AddProductsDialog({
                             onPointerEnter={() => updateFillSelectionTarget(draft.id)}
                           >
                             <Input
-                              className="pr-6"
+                              ref={rowIndex === 0 && field === 'location' ? firstLocationInputRef : undefined}
+                              className={similarSku ? 'pr-16' : 'pr-6'}
                               value={draft[field]}
                               onChange={(event) => updateDraft(draft.id, field, event.target.value)}
                               placeholder={field === 'sku' ? 'SKU' : 'Location'}
                             />
+                            {similarSku ? (
+                              <SimilarSkuButton
+                                sku={similarSku}
+                                onApply={() => {
+                                  applySkuSuggestion(draft.id, similarSku)
+                                }}
+                              />
+                            ) : null}
                             <button
                               type="button"
                               className="bg-primary absolute right-1.5 bottom-1.5 size-2 cursor-crosshair rounded-full opacity-70 transition-opacity hover:opacity-100"
