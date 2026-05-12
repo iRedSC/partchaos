@@ -1167,6 +1167,18 @@ function AddProductsDialog({
     )
   }
 
+  function removeEditableRow(id: string) {
+    setDrafts((currentDrafts) => currentDrafts.filter((draft) => draft.id !== id))
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      next.delete(id)
+      return next
+    })
+    setFillSelection((current) =>
+      current?.sourceId === id || current?.targetId === id ? null : current,
+    )
+  }
+
   function applyBrandPrefix(draft: ProductDraft) {
     const sku = applySkuPrefix(draft.sku, brandPrefix)
     return hydrateSkuFromExisting({ ...draft, sku }, existingBySku)
@@ -1397,37 +1409,18 @@ function AddProductsDialog({
         ) : (
           <div className="flex min-h-0 flex-col gap-4 overflow-hidden">
             <div className="overflow-auto rounded-md border">
-              <div className="bg-muted/50 grid min-w-[640px] grid-cols-[3rem_1.5fr_1fr] items-center border-b px-3 py-3 text-sm font-medium">
-                <Checkbox
-                  checked={allSelected}
-                  onCheckedChange={(checked) => toggleAll(checked === true)}
-                  aria-label="Select all products"
-                />
+              <div className="bg-muted/50 grid min-w-[640px] grid-cols-[1.5fr_1fr_3rem] items-center gap-3 border-b px-3 py-3 text-sm font-medium">
                 <div>SKU</div>
                 <div>Location</div>
+                <div className="sr-only">Remove</div>
               </div>
               <div className="max-h-[320px] min-w-[640px] overflow-y-auto">
                 {drafts.map((draft, rowIndex) => {
-                  const isSelected = selectedIds.has(draft.id)
-
                   return (
                     <div
                       key={draft.id}
-                      className={`grid cursor-pointer grid-cols-[3rem_1.5fr_1fr] items-center gap-3 border-b px-3 py-2 last:border-b-0 ${
-                        isSelected ? 'bg-primary/5' : 'hover:bg-muted/40'
-                      }`}
-                      onClick={(event) => {
-                        if (shouldToggleRow(event.target)) {
-                          toggleDraftSelection(draft.id)
-                        }
-                      }}
+                      className="grid grid-cols-[1.5fr_1fr_3rem] items-center gap-3 border-b px-3 py-2 last:border-b-0"
                     >
-                      <Checkbox
-                        checked={isSelected}
-                        onCheckedChange={(checked) => toggleDraft(draft.id, checked === true)}
-                        onClick={(event) => event.stopPropagation()}
-                        aria-label={`Select ${draft.sku || 'blank product row'}`}
-                      />
                       {productFields.map((field) => {
                         const isInFillRange =
                           fillRange?.field === field &&
@@ -1478,6 +1471,15 @@ function AddProductsDialog({
                           </div>
                         )
                       })}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Remove ${draft.sku || 'blank product row'}`}
+                        onClick={() => removeEditableRow(draft.id)}
+                      >
+                        <Trash2Icon className="size-4" />
+                      </Button>
                     </div>
                   )
                 })}
@@ -1506,7 +1508,7 @@ function AddProductsDialog({
                   disabled={saveableDrafts.length === 0 || saving}
                   onClick={() => onSave(saveableDrafts)}
                 >
-                  {saving ? 'Saving...' : `Save ${saveableDrafts.length} selected`}
+                  {saving ? 'Saving...' : `Save ${saveableDrafts.length} products`}
                 </Button>
               </DialogFooter>
             </div>
