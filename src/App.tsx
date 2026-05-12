@@ -583,7 +583,7 @@ function App() {
         </Card>
       ) : null}
 
-      <Card className="min-h-0 w-full min-w-0 flex-1 basis-0 pb-0">
+      <Card className="min-h-0 w-full min-w-0 flex-1 basis-0 overflow-hidden pb-0">
         <CardHeader>
           <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 space-y-1.5">
@@ -748,6 +748,18 @@ function InventoryTable({
     const scrollContainer = scrollContainerRef.current
 
     if (!scrollContainer) {
+      setScrollTop(0)
+      return
+    }
+
+    scrollContainer.scrollTop = 0
+    setScrollTop(0)
+  }, [items])
+
+  useEffect(() => {
+    const scrollContainer = scrollContainerRef.current
+
+    if (!scrollContainer) {
       return
     }
 
@@ -777,7 +789,7 @@ function InventoryTable({
       ) : (
         <div
           ref={scrollContainerRef}
-          className="min-h-0 flex-1 overflow-auto"
+          className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
           onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         >
           <div style={{ height: virtualTableHeight, position: 'relative' }}>
