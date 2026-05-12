@@ -490,6 +490,8 @@ function InventoryTable({
   const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - 4)
   const visibleCount = Math.ceil(tableViewportHeight / rowHeight) + 8
   const visibleItems = items.slice(startIndex, startIndex + visibleCount)
+  const totalRowsHeight = items.length * rowHeight
+  const virtualTableHeight = Math.max(totalRowsHeight, tableViewportHeight)
 
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current
@@ -527,8 +529,16 @@ function InventoryTable({
           className="min-h-0 flex-1 overflow-auto"
           onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         >
-          <div style={{ height: items.length * rowHeight, position: 'relative' }}>
-            <div style={{ transform: `translateY(${startIndex * rowHeight}px)` }}>
+          <div style={{ height: virtualTableHeight, position: 'relative' }}>
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                right: 0,
+                left: 0,
+                transform: `translateY(${startIndex * rowHeight}px)`,
+              }}
+            >
               {visibleItems.map((item) => (
                 <div
                   key={item._id}
